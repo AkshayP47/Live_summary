@@ -8,6 +8,7 @@
         "build": "tsc -b && vite build",
         "lint": "oxlint",
         "preview": "vite preview",
+        "download-model": "powershell -ExecutionPolicy Bypass -File scripts/download-model.ps1",
         "tauri": "scripts\\tauri.cmd"
     },
     "dependencies": {

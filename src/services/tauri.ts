@@ -28,6 +28,16 @@ export const stopAudioCapture = () => {
     return invoke<void>("stop_audio_capture");
 };
 
+export const pauseAudioCapture = () => {
+    if (!isTauriRuntime()) return Promise.reject(new Error(browserModeMessage));
+    return invoke<void>("pause_audio_capture");
+};
+
+export const resumeAudioCapture = () => {
+    if (!isTauriRuntime()) return Promise.reject(new Error(browserModeMessage));
+    return invoke<void>("resume_audio_capture");
+};
+
 export const listenForAudioLevel = (
     callback: (level: AudioLevel) => void,
 ): Promise<UnlistenFn> => {

@@ -32,7 +32,12 @@ The application will never upload raw audio. The planned OpenAI integration will
 
 ## Whisper model
 
-Download the English base model `ggml-base.en.bin` from the whisper.cpp model releases and place it at `models/ggml-base.en.bin`. The application reports a readable error if the model is missing; it never substitutes fake captions.
+Run `npm run download-model` to fetch the English base model `ggml-base.en.bin`
+(~140 MB, from https://huggingface.co/ggerganov/whisper.cpp) into
+`models/ggml-base.en.bin`, or download it manually from the whisper.cpp model
+releases and place it there. The application reports a readable error if the
+model is missing; it never substitutes fake captions. If you see
+`Whisper model not found` on Start, the file is not yet in `models/`.
 
 ## Phase 2 manual test
 

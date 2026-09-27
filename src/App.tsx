@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import {
     listenForAudioError,
     listenForAudioLevel,
     listenForTranscript,
+    pauseAudioCapture,
+    resumeAudioCapture,
     startAudioCapture,
     stopAudioCapture,
 } from "./services/tauri";
@@ -18,6 +20,11 @@ function App() {
     const [audioDetected, setAudioDetected] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [transcript, setTranscript] = useState<TranscriptSegment[]>([]);
+    const statusRef = useRef(status);
+
+    useEffect(() => {
+        statusRef.current = status;
+    }, [status]);
 
     useEffect(() => {
         let removeLevelListener: (() => void) | undefined;
@@ -25,6 +32,8 @@ function App() {
         let removeTranscriptListener: (() => void) | undefined;
 
         void listenForAudioLevel((level) => {
+            // Freeze the meter while paused; the capture thread keeps running.
+            if (statusRef.current !== "listening") return;
             setAudioLevel(level.percent);
             setAudioDetected(level.detected);
         })
@@ -115,12 +124,24 @@ function App() {
                 </time>
             </section>
 
+            {error !== null && (
+                <p className="error-banner" role="alert">
+                    {error}
+                </p>
+            )}
+
             <section className="transcript-panel" aria-label="Live transcript">
                 <div className="panel-heading">
                     <span>Transcript</span>
                     <span className="local-badge">LOCAL</span>
                 </div>
-                <div className="transcript-empty">
+                <div
+                    className={
+                        transcript.length > 0
+                            ? "transcript-list"
+                            : "transcript-empty"
+                    }
+                >
                     {transcript.length > 0 ? (
                         transcript.map((segment) => (
                             <article
@@ -144,8 +165,8 @@ function App() {
                             </div>
                             <h2>Your captions will appear here</h2>
                             <p>
-                                {error ??
-                                    "Start a session to detect the audio playing on this PC."}
+                                Start a session to detect the audio playing on
+                                this PC.
                             </p>
                         </>
                     )}
@@ -179,16 +200,23 @@ function App() {
                     type="button"
                     onClick={() => {
                         setError(null);
+                        setTranscript([]);
+                        setElapsedSeconds(0);
+                        setAudioLevel(0);
+                        setAudioDetected(false);
                         void startAudioCapture()
                             .then(() => {
-                                setTranscript([]);
                                 setStatus("listening");
                             })
                             .catch((message: unknown) =>
-                                setError(String(message)),
+                                setError(
+                                    message instanceof Error
+                                        ? message.message
+                                        : String(message),
+                                ),
                             );
                     }}
-                    disabled={status === "listening"}
+                    disabled={status !== "ready"}
                 >
                     <span
                         className="button-icon start-icon"
@@ -196,18 +224,56 @@ function App() {
                     />
                     Start
                 </button>
-                <button
-                    className="button secondary"
-                    type="button"
-                    onClick={() => setStatus("paused")}
-                    disabled={status !== "listening"}
-                >
-                    <span
-                        className="button-icon pause-icon"
-                        aria-hidden="true"
-                    />
-                    Pause
-                </button>
+                {status === "paused" ? (
+                    <button
+                        className="button secondary"
+                        type="button"
+                        onClick={() => {
+                            void resumeAudioCapture()
+                                .then(() => setStatus("listening"))
+                                .catch((message: unknown) =>
+                                    setError(
+                                        message instanceof Error
+                                            ? message.message
+                                            : String(message),
+                                    ),
+                                );
+                        }}
+                    >
+                        <span
+                            className="button-icon start-icon"
+                            aria-hidden="true"
+                        />
+                        Resume
+                    </button>
+                ) : (
+                    <button
+                        className="button secondary"
+                        type="button"
+                        onClick={() => {
+                            void pauseAudioCapture()
+                                .then(() => {
+                                    setStatus("paused");
+                                    setAudioLevel(0);
+                                    setAudioDetected(false);
+                                })
+                                .catch((message: unknown) =>
+                                    setError(
+                                        message instanceof Error
+                                            ? message.message
+                                            : String(message),
+                                    ),
+                                );
+                        }}
+                        disabled={status !== "listening"}
+                    >
+                        <span
+                            className="button-icon pause-icon"
+                            aria-hidden="true"
+                        />
+                        Pause
+                    </button>
+                )}
                 <button
                     className="button stop"
                     type="button"
@@ -218,10 +284,13 @@ function App() {
                                 setElapsedSeconds(0);
                                 setAudioLevel(0);
                                 setAudioDetected(false);
-                                setTranscript([]);
                             })
                             .catch((message: unknown) =>
-                                setError(String(message)),
+                                setError(
+                                    message instanceof Error
+                                        ? message.message
+                                        : String(message),
+                                ),
                             );
                     }}
                     disabled={status === "ready"}

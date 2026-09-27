@@ -8,7 +8,9 @@ pub fn run() {
     .manage(audio::AudioCapture::default())
     .invoke_handler(tauri::generate_handler![
       commands::start_audio_capture,
-      commands::stop_audio_capture
+      commands::stop_audio_capture,
+      commands::pause_audio_capture,
+      commands::resume_audio_capture
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

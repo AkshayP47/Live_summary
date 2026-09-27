@@ -18,7 +18,7 @@ impl WhisperTranscriber {
     pub fn new(model_path: &str) -> Result<Self, String> {
         if !std::path::Path::new(model_path).is_file() {
             return Err(format!(
-                "Whisper model not found. Download ggml-base.en.bin into {}.",
+                "Whisper model not found at {}. Download ggml-base.en.bin from https://huggingface.co/ggerganov/whisper.cpp (or run `npm run download-model`).",
                 model_path
             ));
         }
@@ -45,7 +45,7 @@ impl WhisperTranscriber {
             .context
             .create_state()
             .map_err(|_| "Unable to create a Whisper transcription state.".to_string())?;
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 0 });
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_n_threads(2);
         params.set_language(Some("en"));
         params.set_translate(false);

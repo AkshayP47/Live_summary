@@ -17,6 +17,7 @@ pub struct AudioLevel {
 
 pub struct AudioCapture {
     running: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -24,6 +25,7 @@ impl Default for AudioCapture {
     fn default() -> Self {
         Self {
             running: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
             thread: Mutex::new(None),
         }
     }
@@ -32,14 +34,16 @@ impl Default for AudioCapture {
 impl AudioCapture {
     pub fn start(&self, app: AppHandle, model_path: String) -> Result<(), String> {
         if self.running.swap(true, Ordering::SeqCst) {
-            return Ok(());
+            return Err("Audio capture is already running.".to_string());
         }
+        self.paused.store(false, Ordering::SeqCst);
 
         let running = Arc::clone(&self.running);
+        let paused = Arc::clone(&self.paused);
         let handle = thread::Builder::new()
             .name("wasapi-loopback".to_string())
             .spawn(move || {
-                let result = capture_loop(&app, &running, &model_path);
+                let result = capture_loop(&app, &running, &paused, &model_path);
                 running.store(false, Ordering::SeqCst);
 
                 if let Err(error) = result {
@@ -60,6 +64,7 @@ impl AudioCapture {
 
     pub fn stop(&self) -> Result<(), String> {
         self.running.store(false, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst);
 
         if let Some(handle) = self
             .thread
@@ -72,6 +77,22 @@ impl AudioCapture {
                 .map_err(|_| "Audio capture did not stop cleanly.".to_string())?;
         }
 
+        Ok(())
+    }
+
+    pub fn pause(&self) -> Result<(), String> {
+        if !self.running.load(Ordering::SeqCst) {
+            return Err("Audio capture is not running.".to_string());
+        }
+        self.paused.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn resume(&self) -> Result<(), String> {
+        if !self.running.load(Ordering::SeqCst) {
+            return Err("Audio capture is not running.".to_string());
+        }
+        self.paused.store(false, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -87,35 +108,48 @@ impl Drop for AudioCapture {
     }
 }
 
-fn capture_loop(app: &AppHandle, running: &AtomicBool, model_path: &str) -> Result<(), String> {
-    if initialize_mta().is_err() {
-        return Err("Unable to initialize Windows audio.".to_string());
+fn capture_loop(
+    app: &AppHandle,
+    running: &AtomicBool,
+    paused: &AtomicBool,
+    model_path: &str,
+) -> Result<(), String> {
+    let hr = initialize_mta();
+    if hr.is_err() {
+        return Err(format!(
+            "Unable to initialize Windows audio (HRESULT 0x{:08X}).",
+            hr.0 as u32
+        ));
     }
 
-    // Render direction with a capture client reads the default playback mix (WASAPI loopback).
+    // WASAPI loopback: open the default *render* endpoint, then initialize
+    // the client for *capture*. That combination is what sets
+    // AUDCLNT_STREAMFLAGS_LOOPBACK so GetService(IAudioCaptureClient)
+    // succeeds. Initializing with Direction::Render instead leaves a render
+    // client on which get_audiocaptureclient always fails.
     let device = get_default_device(&Direction::Render)
-        .map_err(|_| "No Windows playback device is available.".to_string())?;
+        .map_err(|error| format!("No Windows playback device is available: {error}"))?;
     let mut audio_client = device
         .get_iaudioclient()
-        .map_err(|_| "Unable to open the Windows playback device.".to_string())?;
+        .map_err(|error| format!("Unable to open the Windows playback device: {error}"))?;
     let format = WaveFormat::new(32, 32, &SampleType::Float, 44_100, 2, None);
     let (_, min_period) = audio_client
         .get_device_period()
-        .map_err(|_| "Unable to read the playback device settings.".to_string())?;
+        .map_err(|error| format!("Unable to read the playback device settings: {error}"))?;
     let mode = StreamMode::EventsShared {
         autoconvert: true,
         buffer_duration_hns: min_period,
     };
 
     audio_client
-        .initialize_client(&format, &Direction::Render, &mode)
-        .map_err(|_| "Unable to initialize Windows audio capture.".to_string())?;
+        .initialize_client(&format, &Direction::Capture, &mode)
+        .map_err(|error| format!("Unable to initialize Windows audio capture: {error}"))?;
     let event = audio_client
         .set_get_eventhandle()
-        .map_err(|_| "Unable to start the Windows audio event stream.".to_string())?;
+        .map_err(|error| format!("Unable to start the Windows audio event stream: {error}"))?;
     let capture_client = audio_client
         .get_audiocaptureclient()
-        .map_err(|_| "Unable to read Windows playback audio.".to_string())?;
+        .map_err(|error| format!("Unable to read Windows playback audio: {error}"))?;
     let mut samples = VecDeque::new();
     let mut whisper = WhisperTranscriber::new(model_path)?;
     let mut transcription_audio = Vec::with_capacity(80_000);
@@ -123,14 +157,22 @@ fn capture_loop(app: &AppHandle, running: &AtomicBool, model_path: &str) -> Resu
 
     audio_client
         .start_stream()
-        .map_err(|_| "Unable to start Windows audio capture.".to_string())?;
+        .map_err(|error| format!("Unable to start Windows audio capture: {error}"))?;
 
     while running.load(Ordering::SeqCst) {
         capture_client
             .read_from_device_to_deque(&mut samples)
-            .map_err(|_| "Windows audio capture stopped unexpectedly.".to_string())?;
+            .map_err(|error| format!("Windows audio capture stopped unexpectedly: {error}"))?;
+        if paused.load(Ordering::SeqCst) {
+            // Discard audio captured while paused so resume starts fresh
+            // instead of transcribing a stale backlog.
+            samples.clear();
+            transcription_audio.clear();
+            let _ = event.wait_for_event(250);
+            continue;
+        }
         emit_level_and_collect_audio(app, &mut samples, &mut transcription_audio)?;
-        if transcription_audio.len() >= 80_000 {
+        while transcription_audio.len() >= 80_000 {
             let chunk = std::mem::replace(&mut transcription_audio, Vec::with_capacity(80_000));
             let segments = whisper.transcribe(&chunk, transcription_offset_ms)?;
             transcription_offset_ms += (chunk.len() as u64 * 1000) / 16_000;
@@ -139,8 +181,17 @@ fn capture_loop(app: &AppHandle, running: &AtomicBool, model_path: &str) -> Resu
             }
         }
 
-        if event.wait_for_event(250).is_err() {
-            break;
+        // A timeout here only means "no audio event within 250ms" (for
+        // example silence). It must not stop the session.
+        let _ = event.wait_for_event(250);
+    }
+
+    // Flush the tail of the session so the final seconds are not lost.
+    if !transcription_audio.is_empty() {
+        let chunk = std::mem::take(&mut transcription_audio);
+        let segments = whisper.transcribe(&chunk, transcription_offset_ms)?;
+        for segment in segments {
+            emit_transcript(app, segment)?;
         }
     }
 
@@ -168,24 +219,30 @@ fn emit_level_and_collect_audio(
         return Ok(());
     }
 
+    // Drain every complete window. Processing only one window per event lets
+    // the deque grow without bound and delays transcription.
     let mut peak = 0.0_f32;
     let mut sum = 0.0_f32;
-    let mut count = 0;
-    let mut mono_window = Vec::with_capacity(WINDOW_BYTES / (BYTES_PER_SAMPLE * CHANNELS));
-    while count * BYTES_PER_SAMPLE * CHANNELS < WINDOW_BYTES {
-        let left = read_float(samples);
-        let right = read_float(samples);
-        let mono = ((left + right) * 0.5).clamp(-1.0, 1.0);
-        let value = mono.abs();
-        mono_window.push(mono);
-        peak = peak.max(value);
-        sum += value * value;
-        count += 1;
+    let mut count: usize = 0;
+    while samples.len() >= WINDOW_BYTES {
+        let mut mono_window = Vec::with_capacity(WINDOW_BYTES / (BYTES_PER_SAMPLE * CHANNELS));
+        let mut window_count = 0;
+        while window_count * BYTES_PER_SAMPLE * CHANNELS < WINDOW_BYTES {
+            let left = read_float(samples);
+            let right = read_float(samples);
+            let mono = ((left + right) * 0.5).clamp(-1.0, 1.0);
+            let value = mono.abs();
+            mono_window.push(mono);
+            peak = peak.max(value);
+            sum += value * value;
+            count += 1;
+            window_count += 1;
+        }
+        resample_to_16khz(&mono_window, transcription_audio);
     }
-    resample_to_16khz(&mono_window, transcription_audio);
 
     let rms = (sum / count.max(1) as f32).sqrt();
-    let level = (peak.max(rms * 2.0) * 100.0).round() as u8;
+    let level = (peak.max(rms * 2.0) * 100.0).round().clamp(0.0, 100.0) as u8;
     app.emit(
         "audio-level",
         AudioLevel {
