@@ -1,0 +1,33 @@
+:root {
+    --ink: #23302f;
+    --muted: #7b807a;
+    --paper: #fffdf8;
+    --canvas: #f2eee7;
+    --line: #dcd7ce;
+    --green: #2c7a55;
+    --coral: #c65d45;
+    --amber: #c68b33;
+    --sans: "Segoe UI", sans-serif;
+    --heading: Georgia, serif;
+    --mono: "Cascadia Mono", Consolas, monospace;
+    font: 16px/1.45 var(--sans);
+    color: var(--ink);
+    background: var(--canvas);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+}
+* {
+    box-sizing: border-box;
+}
+body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background:
+        radial-gradient(circle at 10% 0%, #faf7f0, transparent 42%),
+        var(--canvas);
+}
+button {
+    font: inherit;
+}
